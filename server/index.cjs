@@ -4,10 +4,17 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const app = express();
-const PORT = 4000;
+const PORT = Number(process.env.PORT || 4000);
 
-const STATE_PATH = path.resolve("game_state.json");
-const WORD_BANK_PATH = path.resolve("public", "word_bank_stem_with_vectors_300d_with_pca3.json");
+const ROOT_DIR = path.resolve(__dirname, "..");
+const DATA_DIR = path.join(ROOT_DIR, "data");
+const STATE_PATH = path.join(DATA_DIR, "game_state.json");
+const WORD_BANK_FILENAME =
+  "word_bank_stem_boosted_plus_freq_nouns_with_vectors_300d_with_umap.json";
+const WORD_BANK_PATH = path.join(ROOT_DIR, "public", WORD_BANK_FILENAME);
+
+// 서버가 날짜를 결정할 때 사용할 기준 시간대
+const GAME_TIMEZONE = "Asia/Seoul";
 
 app.use(cors());
 app.use(express.json());
@@ -23,6 +30,7 @@ function readState() {
   if (!fs.existsSync(STATE_PATH)) {
     return defaultState();
   }
+
   try {
     const parsed = JSON.parse(fs.readFileSync(STATE_PATH, "utf-8"));
     return {
@@ -35,7 +43,19 @@ function readState() {
 }
 
 function writeState(state) {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
   fs.writeFileSync(STATE_PATH, JSON.stringify(state, null, 2), "utf-8");
+}
+
+function getCurrentGameDate() {
+  const formatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone: GAME_TIMEZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+
+  return formatter.format(new Date()); // YYYY-MM-DD
 }
 
 let cachedWordBank = null;
@@ -66,7 +86,12 @@ function loadWordBank() {
       word: item.word.trim(),
       category: item.category.trim(),
       vector: item.vector,
-      pca3: Array.isArray(item.pca3) && item.pca3.length === 3 ? item.pca3 : undefined,
+      pca3:
+        Array.isArray(item.pca3) &&
+        item.pca3.length === 3 &&
+        item.pca3.every((x) => typeof x === "number" && Number.isFinite(x))
+          ? item.pca3
+          : undefined,
     }));
 
   if (cachedWordBank.length === 0) {
@@ -80,10 +105,16 @@ function normalizeWord(value) {
   return String(value || "").trim().replace(/\s+/g, "").toLowerCase();
 }
 
+function normalizeNickname(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
 function dot(a, b) {
   const len = Math.min(a.length, b.length);
   let sum = 0;
-  for (let i = 0; i < len; i += 1) sum += a[i] * b[i];
+  for (let i = 0; i < len; i += 1) {
+    sum += a[i] * b[i];
+  }
   return sum;
 }
 
@@ -131,7 +162,9 @@ function getRankingInfo(date, guessedWord) {
   });
 
   const normalizedGuess = normalizeWord(guessedWord);
-  const matchedEntry = wordBank.find((entry) => normalizeWord(entry.word) === normalizedGuess);
+  const matchedEntry = wordBank.find(
+    (entry) => normalizeWord(entry.word) === normalizedGuess,
+  );
   const info = rankingMap.get(normalizedGuess);
 
   return {
@@ -141,9 +174,29 @@ function getRankingInfo(date, guessedWord) {
   };
 }
 
+function assertNicknameAvailable(state, date, playerId, nickname) {
+  const normalized = normalizeNickname(nickname);
+  if (!normalized) return;
+
+  const owner = state.sessions.find(
+    (row) =>
+      row.date === date &&
+      normalizeNickname(row.nickname) === normalized &&
+      row.playerId !== playerId,
+  );
+
+  if (owner) {
+    const error = new Error("이미 사용 중인 닉네임입니다.");
+    error.statusCode = 409;
+    throw error;
+  }
+}
+
 function getOrCreateSession(state, date, playerId, nickname) {
   const now = Date.now();
-  let session = state.sessions.find((row) => row.date === date && row.playerId === playerId);
+  let session = state.sessions.find(
+    (row) => row.date === date && row.playerId === playerId,
+  );
 
   if (!session) {
     session = {
@@ -217,13 +270,18 @@ function upsertLeaderboard(state, row) {
   }
 }
 
-app.get("/api/leaderboard", (req, res) => {
-  const date = String(req.query.date || "");
-  if (!date) {
-    return res.status(400).json({ error: "date is required" });
-  }
+app.get("/api/meta", (_req, res) => {
+  res.json({
+    ok: true,
+    currentDate: getCurrentGameDate(),
+    timezone: GAME_TIMEZONE,
+  });
+});
 
+app.get("/api/leaderboard", (_req, res) => {
+  const date = getCurrentGameDate();
   const state = readState();
+
   const rows = state.leaderboard
     .filter((row) => row.date === date)
     .sort((a, b) => {
@@ -243,58 +301,73 @@ app.get("/api/leaderboard", (req, res) => {
       updatedAt: row.updatedAt,
     }));
 
-  res.json(rows);
+  res.json({
+    ok: true,
+    currentDate: date,
+    rows,
+  });
 });
 
 app.post("/api/start", (req, res) => {
-  const { date, playerId, nickname } = req.body ?? {};
+  const { playerId, nickname } = req.body ?? {};
 
-  if (
-    typeof date !== "string" ||
-    typeof playerId !== "string" ||
-    typeof nickname !== "string"
-  ) {
+  if (typeof playerId !== "string" || typeof nickname !== "string") {
     return res.status(400).json({ error: "invalid payload" });
   }
 
+  const date = getCurrentGameDate();
   const safeNickname = nickname.trim().slice(0, 20) || "익명";
-  const state = readState();
-  const session = getOrCreateSession(state, date, playerId, safeNickname);
-  writeState(state);
 
-  res.json({
-    ok: true,
-    startedAt: session.startedAt,
-  });
+  try {
+    const state = readState();
+    assertNicknameAvailable(state, date, playerId, safeNickname);
+    const session = getOrCreateSession(state, date, playerId, safeNickname);
+    writeState(state);
+
+    return res.json({
+      ok: true,
+      currentDate: date,
+      startedAt: session.startedAt,
+    });
+  } catch (error) {
+    return res
+      .status(error.statusCode || 500)
+      .json({ error: error.message || "server error" });
+  }
 });
 
 app.post("/api/reset", (req, res) => {
-  const { date, playerId, nickname } = req.body ?? {};
+  const { playerId, nickname } = req.body ?? {};
 
-  if (
-    typeof date !== "string" ||
-    typeof playerId !== "string" ||
-    typeof nickname !== "string"
-  ) {
+  if (typeof playerId !== "string" || typeof nickname !== "string") {
     return res.status(400).json({ error: "invalid payload" });
   }
 
+  const date = getCurrentGameDate();
   const safeNickname = nickname.trim().slice(0, 20) || "익명";
-  const state = readState();
-  const session = resetSession(state, date, playerId, safeNickname);
-  writeState(state);
 
-  res.json({
-    ok: true,
-    startedAt: session.startedAt,
-  });
+  try {
+    const state = readState();
+    assertNicknameAvailable(state, date, playerId, safeNickname);
+    const session = resetSession(state, date, playerId, safeNickname);
+    writeState(state);
+
+    return res.json({
+      ok: true,
+      currentDate: date,
+      startedAt: session.startedAt,
+    });
+  } catch (error) {
+    return res
+      .status(error.statusCode || 500)
+      .json({ error: error.message || "server error" });
+  }
 });
 
 app.post("/api/guess", (req, res) => {
-  const { date, playerId, nickname, word } = req.body ?? {};
+  const { playerId, nickname, word } = req.body ?? {};
 
   if (
-    typeof date !== "string" ||
     typeof playerId !== "string" ||
     typeof nickname !== "string" ||
     typeof word !== "string"
@@ -302,6 +375,7 @@ app.post("/api/guess", (req, res) => {
     return res.status(400).json({ error: "invalid payload" });
   }
 
+  const date = getCurrentGameDate();
   const safeNickname = nickname.trim().slice(0, 20) || "익명";
   const normalizedWord = normalizeWord(word);
 
@@ -309,43 +383,47 @@ app.post("/api/guess", (req, res) => {
     return res.status(400).json({ error: "단어를 입력해 주세요." });
   }
 
-  let rankingInfo;
   try {
-    rankingInfo = getRankingInfo(date, normalizedWord);
+    const state = readState();
+    assertNicknameAvailable(state, date, playerId, safeNickname);
+
+    const rankingInfo = getRankingInfo(date, normalizedWord);
+    if (!rankingInfo.matchedEntry || !rankingInfo.info) {
+      return res.status(404).json({ error: "현재 단어 집합에 없는 단어입니다." });
+    }
+
+    const session = getOrCreateSession(state, date, playerId, safeNickname);
+    const elapsedMs = Date.now() - session.startedAt;
+
+    upsertLeaderboard(state, {
+      date,
+      playerId,
+      nickname: safeNickname,
+      bestSimilarity: rankingInfo.info.similarity,
+      bestElapsedMs: elapsedMs,
+      updatedAt: Date.now(),
+    });
+
+    writeState(state);
+
+    return res.json({
+      ok: true,
+      currentDate: date,
+      word: rankingInfo.matchedEntry.word,
+      score: similarityToScore(rankingInfo.info.similarity),
+      rank: rankingInfo.info.rank,
+      similarity: rankingInfo.info.similarity,
+      solved: rankingInfo.solved,
+      elapsedMs,
+    });
   } catch (error) {
-    return res.status(500).json({ error: error instanceof Error ? error.message : "server error" });
+    return res
+      .status(error.statusCode || 500)
+      .json({ error: error.message || "server error" });
   }
-
-  if (!rankingInfo.matchedEntry || !rankingInfo.info) {
-    return res.status(404).json({ error: "현재 단어 집합에 없는 단어입니다." });
-  }
-
-  const state = readState();
-  const session = getOrCreateSession(state, date, playerId, safeNickname);
-  const elapsedMs = Date.now() - session.startedAt;
-
-  upsertLeaderboard(state, {
-    date,
-    playerId,
-    nickname: safeNickname,
-    bestSimilarity: rankingInfo.info.similarity,
-    bestElapsedMs: elapsedMs,
-    updatedAt: Date.now(),
-  });
-
-  writeState(state);
-
-  res.json({
-    ok: true,
-    word: rankingInfo.matchedEntry.word,
-    score: similarityToScore(rankingInfo.info.similarity),
-    rank: rankingInfo.info.rank,
-    similarity: rankingInfo.info.similarity,
-    solved: rankingInfo.solved,
-    elapsedMs,
-  });
 });
 
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`Server running on http://0.0.0.0:${PORT}`);
+  console.log(`Using timezone: ${GAME_TIMEZONE}`);
 });

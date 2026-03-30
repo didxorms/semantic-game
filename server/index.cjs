@@ -185,11 +185,11 @@ function assertNicknameAvailable(state, date, playerId, nickname) {
       row.playerId !== playerId,
   );
 
-  if (owner) {
-    const error = new Error("이미 사용 중인 닉네임입니다.");
-    error.statusCode = 409;
-    throw error;
-  }
+  // if (owner) {
+  //   const error = new Error("이미 사용 중인 닉네임입니다.");
+  //   error.statusCode = 409;
+  //   throw error;
+  // }
 }
 
 function getOrCreateSession(state, date, playerId, nickname) {

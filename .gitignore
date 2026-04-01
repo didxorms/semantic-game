@@ -23,5 +23,5 @@ dist-ssr
 *.sln
 *.sw?
 
-game_state.json
-leaderboard.json
+data
+public

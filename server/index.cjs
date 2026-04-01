@@ -9,11 +9,21 @@ const PORT = Number(process.env.PORT || 4000);
 const ROOT_DIR = path.resolve(__dirname, "..");
 const DATA_DIR = path.join(ROOT_DIR, "data");
 const STATE_PATH = path.join(DATA_DIR, "game_state.json");
-const WORD_BANK_FILENAME =
-  "word_bank_stem_boosted_plus_freq_nouns_with_vectors_300d_with_umap.json";
-const WORD_BANK_PATH = path.join(ROOT_DIR, "public", WORD_BANK_FILENAME);
 
-// 서버가 날짜를 결정할 때 사용할 기준 시간대
+// 추측 가능한 전체 단어 집합: 반드시 vector가 있어야 함
+const GUESS_BANK_PATH = path.join(
+  ROOT_DIR,
+  "data",
+  "guess_bank_with_vectors.json",
+);
+
+// 정답 후보 집합: word만 있어도 됨
+const ANSWER_WHITELIST_PATH = path.join(
+  ROOT_DIR,
+  "data",
+  "answer_whitelist.json",
+);
+
 const GAME_TIMEZONE = "Asia/Seoul";
 
 app.use(cors());
@@ -23,6 +33,7 @@ function defaultState() {
   return {
     sessions: [],
     leaderboard: [],
+    dailyConfig: {},
   };
 }
 
@@ -36,6 +47,12 @@ function readState() {
     return {
       sessions: Array.isArray(parsed.sessions) ? parsed.sessions : [],
       leaderboard: Array.isArray(parsed.leaderboard) ? parsed.leaderboard : [],
+      dailyConfig:
+        parsed.dailyConfig &&
+        typeof parsed.dailyConfig === "object" &&
+        !Array.isArray(parsed.dailyConfig)
+          ? parsed.dailyConfig
+          : {},
     };
   } catch {
     return defaultState();
@@ -55,36 +72,66 @@ function getCurrentGameDate() {
     day: "2-digit",
   });
 
-  return formatter.format(new Date()); // YYYY-MM-DD
+  return formatter.format(new Date());
 }
 
-let cachedWordBank = null;
+function getDailyConfig(state, date) {
+  const dailyConfig =
+    state.dailyConfig &&
+    typeof state.dailyConfig === "object" &&
+    !Array.isArray(state.dailyConfig)
+      ? state.dailyConfig
+      : {};
 
-function loadWordBank() {
-  if (cachedWordBank) return cachedWordBank;
-
-  if (!fs.existsSync(WORD_BANK_PATH)) {
-    throw new Error(`word bank file not found: ${WORD_BANK_PATH}`);
+  const raw = dailyConfig[date];
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return {
+      version: 0,
+    };
   }
 
-  const raw = JSON.parse(fs.readFileSync(WORD_BANK_PATH, "utf-8"));
+  return {
+    version: Number.isInteger(raw.version) ? raw.version : 0,
+    secretIndexOverride: Number.isInteger(raw.secretIndexOverride)
+      ? raw.secretIndexOverride
+      : undefined,
+  };
+}
+
+function getGameVersion(state, date) {
+  return getDailyConfig(state, date).version ?? 0;
+}
+
+function normalizeWord(value) {
+  return String(value || "").trim().replace(/\s+/g, "").toLowerCase();
+}
+
+let cachedGuessBank = null;
+let cachedAnswerWhitelist = null;
+
+function loadGuessBank() {
+  if (cachedGuessBank) return cachedGuessBank;
+
+  if (!fs.existsSync(GUESS_BANK_PATH)) {
+    throw new Error(`guess bank file not found: ${GUESS_BANK_PATH}`);
+  }
+
+  const raw = JSON.parse(fs.readFileSync(GUESS_BANK_PATH, "utf-8"));
   if (!Array.isArray(raw) || raw.length === 0) {
-    throw new Error("invalid word bank");
+    throw new Error("invalid guess bank");
   }
 
-  cachedWordBank = raw
+  cachedGuessBank = raw
     .filter(
       (item) =>
         item &&
         typeof item.word === "string" &&
-        typeof item.category === "string" &&
         Array.isArray(item.vector) &&
         item.vector.length > 0 &&
         item.vector.every((x) => typeof x === "number" && Number.isFinite(x)),
     )
     .map((item) => ({
       word: item.word.trim(),
-      category: item.category.trim(),
       vector: item.vector,
       pca3:
         Array.isArray(item.pca3) &&
@@ -94,19 +141,44 @@ function loadWordBank() {
           : undefined,
     }));
 
-  if (cachedWordBank.length === 0) {
-    throw new Error("no valid entries in word bank");
+  if (cachedGuessBank.length === 0) {
+    throw new Error("no valid entries in guess bank");
   }
 
-  return cachedWordBank;
+  return cachedGuessBank;
 }
 
-function normalizeWord(value) {
-  return String(value || "").trim().replace(/\s+/g, "").toLowerCase();
-}
+function loadAnswerWhitelist() {
+  if (cachedAnswerWhitelist) return cachedAnswerWhitelist;
 
-function normalizeNickname(value) {
-  return String(value || "").trim().toLowerCase();
+  if (!fs.existsSync(ANSWER_WHITELIST_PATH)) {
+    throw new Error(`answer whitelist file not found: ${ANSWER_WHITELIST_PATH}`);
+  }
+
+  const raw = JSON.parse(fs.readFileSync(ANSWER_WHITELIST_PATH, "utf-8"));
+  if (!Array.isArray(raw) || raw.length === 0) {
+    throw new Error("invalid answer whitelist");
+  }
+
+  const guessBank = loadGuessBank();
+  const guessWordSet = new Set(
+    guessBank.map((entry) => normalizeWord(entry.word)),
+  );
+
+  cachedAnswerWhitelist = raw
+    .map((item) => {
+      if (typeof item === "string") return item.trim();
+      if (item && typeof item.word === "string") return item.word.trim();
+      return null;
+    })
+    .filter((word) => typeof word === "string" && word.length > 0)
+    .filter((word) => guessWordSet.has(normalizeWord(word)));
+
+  if (cachedAnswerWhitelist.length === 0) {
+    throw new Error("no valid entries in answer whitelist");
+  }
+
+  return cachedAnswerWhitelist;
 }
 
 function dot(a, b) {
@@ -141,12 +213,45 @@ function seedToIndex(seed, length) {
   return length > 0 ? hash % length : 0;
 }
 
-function getRankingInfo(date, guessedWord) {
-  const wordBank = loadWordBank();
-  const secretIndex = seedToIndex(date, wordBank.length);
-  const secret = wordBank[secretIndex];
+function getSecretAnswerIndexForDate(state, date, whitelistLength) {
+  const daily = getDailyConfig(state, date);
 
-  const rankingList = wordBank
+  if (
+    Number.isInteger(daily.secretIndexOverride) &&
+    daily.secretIndexOverride >= 0 &&
+    daily.secretIndexOverride < whitelistLength
+  ) {
+    return daily.secretIndexOverride;
+  }
+
+  return seedToIndex(date, whitelistLength);
+}
+
+function getSecretAnswerWordForDate(state, date) {
+  const whitelist = loadAnswerWhitelist();
+  const answerIndex = getSecretAnswerIndexForDate(
+    state,
+    date,
+    whitelist.length,
+  );
+  return whitelist[answerIndex];
+}
+
+function getRankingInfo(state, date, guessedWord) {
+  const guessBank = loadGuessBank();
+  const secretAnswerWord = getSecretAnswerWordForDate(state, date);
+
+  const secret = guessBank.find(
+    (entry) => normalizeWord(entry.word) === normalizeWord(secretAnswerWord),
+  );
+
+  if (!secret) {
+    throw new Error(
+      `answer whitelist word not found in guess bank: ${secretAnswerWord}`,
+    );
+  }
+
+  const rankingList = guessBank
     .map((entry) => ({
       word: entry.word,
       similarity: cosineSimilarity(entry.vector, secret.vector),
@@ -162,7 +267,7 @@ function getRankingInfo(date, guessedWord) {
   });
 
   const normalizedGuess = normalizeWord(guessedWord);
-  const matchedEntry = wordBank.find(
+  const matchedEntry = guessBank.find(
     (entry) => normalizeWord(entry.word) === normalizedGuess,
   );
   const info = rankingMap.get(normalizedGuess);
@@ -172,24 +277,6 @@ function getRankingInfo(date, guessedWord) {
     info,
     solved: normalizedGuess === normalizeWord(secret.word),
   };
-}
-
-function assertNicknameAvailable(state, date, playerId, nickname) {
-  const normalized = normalizeNickname(nickname);
-  if (!normalized) return;
-
-  const owner = state.sessions.find(
-    (row) =>
-      row.date === date &&
-      normalizeNickname(row.nickname) === normalized &&
-      row.playerId !== playerId,
-  );
-
-  // if (owner) {
-  //   const error = new Error("이미 사용 중인 닉네임입니다.");
-  //   error.statusCode = 409;
-  //   throw error;
-  // }
 }
 
 function getOrCreateSession(state, date, playerId, nickname) {
@@ -271,19 +358,23 @@ function upsertLeaderboard(state, row) {
 }
 
 app.get("/api/meta", (_req, res) => {
+  const state = readState();
+  const currentDate = getCurrentGameDate();
+
   res.json({
     ok: true,
-    currentDate: getCurrentGameDate(),
+    currentDate,
     timezone: GAME_TIMEZONE,
+    gameVersion: getGameVersion(state, currentDate),
   });
 });
 
 app.get("/api/leaderboard", (_req, res) => {
-  const date = getCurrentGameDate();
   const state = readState();
+  const currentDate = getCurrentGameDate();
 
   const rows = state.leaderboard
-    .filter((row) => row.date === date)
+    .filter((row) => row.date === currentDate)
     .sort((a, b) => {
       if (b.bestSimilarity !== a.bestSimilarity) {
         return b.bestSimilarity - a.bestSimilarity;
@@ -303,7 +394,8 @@ app.get("/api/leaderboard", (_req, res) => {
 
   res.json({
     ok: true,
-    currentDate: date,
+    currentDate,
+    gameVersion: getGameVersion(state, currentDate),
     rows,
   });
 });
@@ -315,25 +407,18 @@ app.post("/api/start", (req, res) => {
     return res.status(400).json({ error: "invalid payload" });
   }
 
-  const date = getCurrentGameDate();
+  const state = readState();
+  const currentDate = getCurrentGameDate();
   const safeNickname = nickname.trim().slice(0, 20) || "익명";
+  const session = getOrCreateSession(state, currentDate, playerId, safeNickname);
+  writeState(state);
 
-  try {
-    const state = readState();
-    assertNicknameAvailable(state, date, playerId, safeNickname);
-    const session = getOrCreateSession(state, date, playerId, safeNickname);
-    writeState(state);
-
-    return res.json({
-      ok: true,
-      currentDate: date,
-      startedAt: session.startedAt,
-    });
-  } catch (error) {
-    return res
-      .status(error.statusCode || 500)
-      .json({ error: error.message || "server error" });
-  }
+  res.json({
+    ok: true,
+    currentDate,
+    gameVersion: getGameVersion(state, currentDate),
+    startedAt: session.startedAt,
+  });
 });
 
 app.post("/api/reset", (req, res) => {
@@ -343,25 +428,18 @@ app.post("/api/reset", (req, res) => {
     return res.status(400).json({ error: "invalid payload" });
   }
 
-  const date = getCurrentGameDate();
+  const state = readState();
+  const currentDate = getCurrentGameDate();
   const safeNickname = nickname.trim().slice(0, 20) || "익명";
+  const session = resetSession(state, currentDate, playerId, safeNickname);
+  writeState(state);
 
-  try {
-    const state = readState();
-    assertNicknameAvailable(state, date, playerId, safeNickname);
-    const session = resetSession(state, date, playerId, safeNickname);
-    writeState(state);
-
-    return res.json({
-      ok: true,
-      currentDate: date,
-      startedAt: session.startedAt,
-    });
-  } catch (error) {
-    return res
-      .status(error.statusCode || 500)
-      .json({ error: error.message || "server error" });
-  }
+  res.json({
+    ok: true,
+    currentDate,
+    gameVersion: getGameVersion(state, currentDate),
+    startedAt: session.startedAt,
+  });
 });
 
 app.post("/api/guess", (req, res) => {
@@ -375,28 +453,33 @@ app.post("/api/guess", (req, res) => {
     return res.status(400).json({ error: "invalid payload" });
   }
 
-  const date = getCurrentGameDate();
-  const safeNickname = nickname.trim().slice(0, 20) || "익명";
   const normalizedWord = normalizeWord(word);
-
   if (!normalizedWord) {
     return res.status(400).json({ error: "단어를 입력해 주세요." });
   }
 
   try {
     const state = readState();
-    assertNicknameAvailable(state, date, playerId, safeNickname);
+    const currentDate = getCurrentGameDate();
+    const safeNickname = nickname.trim().slice(0, 20) || "익명";
 
-    const rankingInfo = getRankingInfo(date, normalizedWord);
+    const rankingInfo = getRankingInfo(state, currentDate, normalizedWord);
     if (!rankingInfo.matchedEntry || !rankingInfo.info) {
-      return res.status(404).json({ error: "현재 단어 집합에 없는 단어입니다." });
+      return res
+        .status(404)
+        .json({ error: "현재 단어 집합에 없는 단어입니다." });
     }
 
-    const session = getOrCreateSession(state, date, playerId, safeNickname);
+    const session = getOrCreateSession(
+      state,
+      currentDate,
+      playerId,
+      safeNickname,
+    );
     const elapsedMs = Date.now() - session.startedAt;
 
     upsertLeaderboard(state, {
-      date,
+      date: currentDate,
       playerId,
       nickname: safeNickname,
       bestSimilarity: rankingInfo.info.similarity,
@@ -408,7 +491,8 @@ app.post("/api/guess", (req, res) => {
 
     return res.json({
       ok: true,
-      currentDate: date,
+      currentDate,
+      gameVersion: getGameVersion(state, currentDate),
       word: rankingInfo.matchedEntry.word,
       score: similarityToScore(rankingInfo.info.similarity),
       rank: rankingInfo.info.rank,
@@ -417,13 +501,16 @@ app.post("/api/guess", (req, res) => {
       elapsedMs,
     });
   } catch (error) {
-    return res
-      .status(error.statusCode || 500)
-      .json({ error: error.message || "server error" });
+    return res.status(500).json({
+      error: error instanceof Error ? error.message : "server error",
+    });
   }
 });
 
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`Server running on http://0.0.0.0:${PORT}`);
   console.log(`Using timezone: ${GAME_TIMEZONE}`);
+  console.log(`Using state file: ${STATE_PATH}`);
+  console.log(`Using guess bank: ${GUESS_BANK_PATH}`);
+  console.log(`Using answer whitelist: ${ANSWER_WHITELIST_PATH}`);
 });

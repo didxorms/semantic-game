@@ -1,6 +1,7 @@
 type GuessApiResponse = {
   ok: true;
   currentDate: string;
+  gameVersion: number;
   word: string;
   score: number;
   rank: number;
@@ -21,11 +22,13 @@ type GameMetaResponse = {
   ok: true;
   currentDate: string;
   timezone: string;
+  gameVersion: number;
 };
 
 type LeaderboardResponse = {
   ok: true;
   currentDate: string;
+  gameVersion: number;
   rows: LeaderboardRow[];
 };
 
@@ -77,6 +80,8 @@ export async function fetchLeaderboard(): Promise<LeaderboardResponse> {
     ok: true,
     currentDate:
       typeof data?.currentDate === "string" ? data.currentDate : "",
+    gameVersion:
+      typeof data?.gameVersion === "number" ? data.gameVersion : 0,
     rows: Array.isArray(data?.rows) ? (data.rows as LeaderboardRow[]) : [],
   };
 }

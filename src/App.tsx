@@ -27,7 +27,7 @@ import type {
 
 const STORAGE_KEY = "semantic-guess-game-state-v7";
 const WORD_BANK_URL =
-  "/word_bank_stem_boosted_plus_freq_nouns_with_vectors_300d_with_umap.json";
+  "/guess_bank_with_vectors.json";
 
 const FALLBACK_WORD_BANK: WordEntry[] = [
   { word: "강아지", category: "동물", vector: [0.93, 0.88, 0.12, 0.08, 0.17, 0.64] },
@@ -44,8 +44,12 @@ const FALLBACK_WORD_BANK: WordEntry[] = [
   { word: "라면", category: "음식", vector: [0.24, 0.23, 0.56, 0.17, 0.16, 0.1] },
 ];
 
-function getHistoryStorageKey(gameDate: string, playerId: string) {
-  return `${STORAGE_KEY}-${gameDate}-${playerId}`;
+function getHistoryStorageKey(
+  gameDate: string,
+  gameVersion: number,
+  playerId: string,
+) {
+  return `${STORAGE_KEY}-${gameDate}-v${gameVersion}-${playerId}`;
 }
 
 function validateWordBank(
@@ -214,6 +218,7 @@ export default function App() {
 
   const [leaderboard, setLeaderboard] = useState<LeaderboardRow[]>([]);
   const [gameDate, setGameDate] = useState("");
+  const [gameVersion, setGameVersion] = useState<number | null>(null);
   const [gameTimezone, setGameTimezone] = useState("");
 
   useEffect(() => {
@@ -236,6 +241,9 @@ export default function App() {
         if (!cancelled) {
           setGameDate(meta.currentDate);
           setGameTimezone(meta.timezone);
+          setGameVersion(
+            typeof meta.gameVersion === "number" ? meta.gameVersion : 0,
+          );
         }
       } catch {
         if (!cancelled) {
@@ -295,9 +303,19 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!gameDate || !playerId || typeof window === "undefined") return;
+    if (
+      !gameDate ||
+      gameVersion === null ||
+      !playerId ||
+      typeof window === "undefined"
+    ) {
+      return;
+    }
 
-    const raw = localStorage.getItem(getHistoryStorageKey(gameDate, playerId));
+    const raw = localStorage.getItem(
+      getHistoryStorageKey(gameDate, gameVersion, playerId),
+    );
+
     if (!raw) {
       setHistory([]);
       setIsSolved(false);
@@ -329,19 +347,26 @@ export default function App() {
       setHistory([]);
       setIsSolved(false);
     }
-  }, [gameDate, playerId]);
+  }, [gameDate, gameVersion, playerId]);
 
   useEffect(() => {
-    if (!gameDate || !playerId || typeof window === "undefined") return;
+    if (
+      !gameDate ||
+      gameVersion === null ||
+      !playerId ||
+      typeof window === "undefined"
+    ) {
+      return;
+    }
 
     localStorage.setItem(
-      getHistoryStorageKey(gameDate, playerId),
+      getHistoryStorageKey(gameDate, gameVersion, playerId),
       JSON.stringify({
         history,
         isSolved,
       }),
     );
-  }, [gameDate, playerId, history, isSolved]);
+  }, [gameDate, gameVersion, playerId, history, isSolved]);
 
   useEffect(() => {
     if (wordBankError) {
@@ -359,6 +384,10 @@ export default function App() {
       if (data.currentDate) {
         setGameDate(data.currentDate);
       }
+
+      if (typeof data.gameVersion === "number") {
+        setGameVersion(data.gameVersion);
+      }
     } catch {
       // ignore
     }
@@ -373,6 +402,10 @@ export default function App() {
 
       if (typeof data?.currentDate === "string") {
         setGameDate(data.currentDate);
+      }
+
+      if (typeof data?.gameVersion === "number") {
+        setGameVersion(data.gameVersion);
       }
     } catch {
       // ignore
@@ -429,10 +462,14 @@ export default function App() {
         playerId,
         nickname: nickname.trim() || "익명",
         word: normalized,
-      })) as GuessApiResponse & { currentDate: string };
+      })) as GuessApiResponse & { currentDate: string; gameVersion: number };
 
       if (resultData.currentDate) {
         setGameDate(resultData.currentDate);
+      }
+
+      if (typeof resultData.gameVersion === "number") {
+        setGameVersion(resultData.gameVersion);
       }
 
       const result: GuessResult = {
@@ -467,8 +504,15 @@ export default function App() {
     setInput("");
     setMessage("기록을 초기화했습니다.");
 
-    if (gameDate && playerId && typeof window !== "undefined") {
-      localStorage.removeItem(getHistoryStorageKey(gameDate, playerId));
+    if (
+      gameDate &&
+      gameVersion !== null &&
+      playerId &&
+      typeof window !== "undefined"
+    ) {
+      localStorage.removeItem(
+        getHistoryStorageKey(gameDate, gameVersion, playerId),
+      );
     }
 
     try {

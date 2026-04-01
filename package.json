@@ -4,12 +4,16 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-  "dev": "vite",
-  "dev:server": "node server/index.cjs",
-  "build": "tsc -b && vite build",
-  "lint": "eslint .",
-  "preview": "vite preview",
-  "start:server": "node server/index.cjs"
+    "dev": "vite",
+    "dev:server": "node server/index.cjs",
+    "build": "tsc -b && vite build",
+    "lint": "eslint .",
+    "preview": "vite preview",
+    "start:server": "node server/index.cjs",
+    "admin:reroll": "node scripts/admin.cjs reroll",
+    "admin:reset-leaderboard": "node scripts/admin.cjs reset-leaderboard",
+    "admin:reset-nicknames": "node scripts/admin.cjs reset-nicknames",
+    "admin:show-answer": "node scripts/admin.cjs show-answer"
   },
   "dependencies": {
     "cors": "^2.8.6",

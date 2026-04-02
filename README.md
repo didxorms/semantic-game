@@ -1,74 +1,41 @@
-# React + TypeScript + Vite
+# 근맨틀
+코사인 유사도 기반 단어 추측 게임 꼬맨틀에서 영감을 받아 제작한 한국어 단어 추측 게임입니다.
+사용자는 단어를 입력하고, 정답 단어와의 의미적 유사도를 점수로 확인하며 정답을 추측할 수 있습니다.
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+## 주요 특징
+### 1. 데이터셋 
+입력/정답 데이터셋의 구분 없이 모두 표준 국어대사전에서 가져오던 꼬맨틀과 달리
+근맨틀은 너무 어려운(지엽적인) 단어는 제외하기 위해 입력 데이터셋과 정답 데이터셋을 구분했습니다.
+입력 데이터셋은 한국어 기초 대사전의 명사들을 사용했고, 정답 데이터셋은 자주 사용하는 단어들을 분야별로 선별하였습니다.
+단어를 벡터로 임베딩하기 위해 FastText의 한국어 데이터셋을 사용했습니다. 
 
-Currently, two official plugins are available:
+### 2. 벡터 시각화
+NLP에선 자연어를 입력받고 이를 숫자(벡터)로 대응시키는 과정이 필요한데 이를 임베딩이라 합니다.
+임베딩 된 벡터들은 유사한 의미를 가질수록 비슷한 방향을 가리킵니다.
+근맨틀에서는 이 벡터들을 시각화하여 NLP에서 단어들이 어떻게 임베딩되는지를 나타내고자 했습니다.
+이를 위해 FastText에서 300차원이던 벡터를 UMAP 알고리즘을 사용하여 3차원으로 축소시켰습니다.
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+## 실행 방법
+```bash
+# 1. 패키지 설치
+npm install
 
-## React Compiler
+# 2. 프론트엔드 실행
+npm run dev -- --host 0.0.0.0
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+# 3. 백엔드 실행
+npm run start:server
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+나머지 admin 명령어들은 package.json 참고
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+## 추후 계획
+현재는 노트북에서 서버를 호스팅하여 사용하고 있고, 도메인도 없어서 불안정하고 접근성이 좋지 않습니다.
+따라서 추후 다른 서버를 사용하여 이를 보완할 예정입니다.
+과도한 제출을 금지하고, 비효율적인 랭킹 계산 구조를 개선할 예정입니다.
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-```
-# semantic-game
+
+
+## 버그 제보
+오류를 발견한다면 연락주세요
+rmsxodid08@gmail.com

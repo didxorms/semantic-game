@@ -23,6 +23,7 @@ type GameMetaResponse = {
   currentDate: string;
   timezone: string;
   gameVersion: number;
+  wordCount: number;
 };
 
 type LeaderboardResponse = {
@@ -30,6 +31,11 @@ type LeaderboardResponse = {
   currentDate: string;
   gameVersion: number;
   rows: LeaderboardRow[];
+};
+
+type VectorPoint = {
+  word: string;
+  position: [number, number, number];
 };
 
 const API_BASE =
@@ -148,6 +154,24 @@ export async function submitGuessApi(params: {
   }
 
   return data as GuessApiResponse;
+}
+
+export async function fetchVectorPoints(words: string[]): Promise<VectorPoint[]> {
+  const response = await fetch(`${API_BASE}/api/vector-points`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ words }),
+  });
+
+  const data = await parseJsonSafe(response);
+
+  if (!response.ok) {
+    throw new Error(extractErrorMessage(data, "벡터 좌표를 불러오지 못했습니다."));
+  }
+
+  return Array.isArray(data?.rows) ? (data.rows as VectorPoint[]) : [];
 }
 
 export type { GuessApiResponse, LeaderboardRow, GameMetaResponse, LeaderboardResponse };

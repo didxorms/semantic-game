@@ -106,6 +106,53 @@ function normalizeWord(value) {
   return String(value || "").trim().replace(/\s+/g, "").toLowerCase();
 }
 
+function projectTo3D(entry) {
+  if (
+    Array.isArray(entry.pca3) &&
+    entry.pca3.length === 3 &&
+    entry.pca3.every((x) => typeof x === "number" && Number.isFinite(x))
+  ) {
+    return entry.pca3;
+  }
+
+  const vector = Array.isArray(entry.vector) ? entry.vector : [];
+  const dimensions = Math.max(6, vector.length);
+  const padded = Array.from({ length: dimensions }, (_, index) => vector[index] ?? 0);
+
+  const projectionMatrix = [
+    [0.72, -0.18, 0.31, 0.44, -0.22, 0.36],
+    [-0.21, 0.67, 0.14, -0.33, 0.62, 0.18],
+    [0.28, 0.16, 0.71, -0.24, 0.19, 0.58],
+  ];
+
+  const baseProjected = projectionMatrix.map((row) =>
+    row.reduce((sum, weight, index) => sum + weight * (padded[index] ?? 0), 0),
+  );
+
+  let extraX = 0;
+  let extraY = 0;
+  let extraZ = 0;
+
+  for (let i = 6; i < padded.length; i += 1) {
+    const v = padded[i];
+    extraX += v * (((i % 3) + 1) * 0.013);
+    extraY += v * ((((i + 1) % 4) + 1) * -0.009);
+    extraZ += v * ((((i + 2) % 5) + 1) * 0.011);
+  }
+
+  const projected = [
+    baseProjected[0] + extraX,
+    baseProjected[1] + extraY,
+    baseProjected[2] + extraZ,
+  ];
+
+  const length =
+    Math.sqrt(projected.reduce((sum, value) => sum + value * value, 0)) || 1;
+  const scale = 115;
+
+  return projected.map((value) => (value / length) * scale);
+}
+
 let cachedGuessBank = null;
 let cachedAnswerWhitelist = null;
 
@@ -360,12 +407,14 @@ function upsertLeaderboard(state, row) {
 app.get("/api/meta", (_req, res) => {
   const state = readState();
   const currentDate = getCurrentGameDate();
+  const guessBank = loadGuessBank();
 
   res.json({
     ok: true,
     currentDate,
     timezone: GAME_TIMEZONE,
     gameVersion: getGameVersion(state, currentDate),
+    wordCount: guessBank.length,
   });
 });
 
@@ -398,6 +447,50 @@ app.get("/api/leaderboard", (_req, res) => {
     gameVersion: getGameVersion(state, currentDate),
     rows,
   });
+});
+
+app.post("/api/vector-points", (req, res) => {
+  const { words } = req.body ?? {};
+
+  if (!Array.isArray(words)) {
+    return res.status(400).json({ error: "invalid payload" });
+  }
+
+  try {
+    const guessBank = loadGuessBank();
+    const wordMap = new Map(
+      guessBank.map((entry) => [normalizeWord(entry.word), entry]),
+    );
+
+    const uniqueWords = [
+      ...new Set(
+        words
+          .map((word) => normalizeWord(word))
+          .filter(Boolean),
+      ),
+    ];
+
+    const rows = uniqueWords
+      .map((word) => {
+        const entry = wordMap.get(word);
+        if (!entry) return null;
+
+        return {
+          word: entry.word,
+          position: projectTo3D(entry),
+        };
+      })
+      .filter(Boolean);
+
+    return res.json({
+      ok: true,
+      rows,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      error: error instanceof Error ? error.message : "server error",
+    });
+  }
 });
 
 app.post("/api/start", (req, res) => {

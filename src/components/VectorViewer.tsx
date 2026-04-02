@@ -4,7 +4,7 @@ import {
   useState,
   type PointerEvent as ReactPointerEvent,
 } from "react";
-import type { GuessResult, WordEntry } from "../types/game";
+import type { GuessResult, VectorPoint } from "../types/game";
 
 type Vec3 = [number, number, number];
 
@@ -21,49 +21,6 @@ const AXIS_LENGTH = 150;
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
-}
-
-function projectTo3D(entry: WordEntry) {
-  if (entry.pca3) {
-    return entry.pca3 as Vec3;
-  }
-
-  const vector = entry.vector;
-  const dimensions = Math.max(6, vector.length);
-  const padded = Array.from({ length: dimensions }, (_, index) => vector[index] ?? 0);
-
-  const projectionMatrix = [
-    [0.72, -0.18, 0.31, 0.44, -0.22, 0.36],
-    [-0.21, 0.67, 0.14, -0.33, 0.62, 0.18],
-    [0.28, 0.16, 0.71, -0.24, 0.19, 0.58],
-  ];
-
-  const baseProjected = projectionMatrix.map((row) =>
-    row.reduce((sum, weight, index) => sum + weight * (padded[index] ?? 0), 0),
-  );
-
-  let extraX = 0;
-  let extraY = 0;
-  let extraZ = 0;
-
-  for (let i = 6; i < padded.length; i += 1) {
-    const v = padded[i];
-    extraX += v * (((i % 3) + 1) * 0.013);
-    extraY += v * ((((i + 1) % 4) + 1) * -0.009);
-    extraZ += v * ((((i + 2) % 5) + 1) * 0.011);
-  }
-
-  const projected = [
-    baseProjected[0] + extraX,
-    baseProjected[1] + extraY,
-    baseProjected[2] + extraZ,
-  ];
-
-  const length =
-    Math.sqrt(projected.reduce((sum, value) => sum + value * value, 0)) || 1;
-  const scale = 115;
-
-  return projected.map((value) => (value / length) * scale) as Vec3;
 }
 
 function rotatePoint([x, y, z]: Vec3, yaw: number, pitch: number): Vec3 {
@@ -126,12 +83,12 @@ function ArrowHead({
 
 type VectorViewerProps = {
   history: GuessResult[];
-  wordBank: WordEntry[];
+  vectorPoints: VectorPoint[];
 };
 
 export default function VectorViewer({
   history,
-  wordBank,
+  vectorPoints,
 }: VectorViewerProps) {
   const [yaw, setYaw] = useState(0.7);
   const [pitch, setPitch] = useState(-0.35);
@@ -146,17 +103,21 @@ export default function VectorViewer({
   } | null>(null);
 
   const plottedEntries = useMemo(() => {
+    const pointMap = new Map(
+      vectorPoints.map((entry) => [entry.word, entry.position]),
+    );
+
     return history
       .map((item) => {
-        const entry = wordBank.find((candidate) => candidate.word === item.word);
-        if (!entry || !Array.isArray(entry.vector)) return null;
-        return { word: entry.word, score: item.score, position: projectTo3D(entry) };
+        const position = pointMap.get(item.word);
+        if (!position) return null;
+        return { word: item.word, score: item.score, position };
       })
       .filter(
         (entry): entry is { word: string; score: number; position: Vec3 } =>
           Boolean(entry),
       );
-  }, [history, wordBank]);
+  }, [history, vectorPoints]);
 
   const rotatedScene = useMemo(() => {
     const axisBase = [

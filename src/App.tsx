@@ -8,6 +8,7 @@ import VectorViewer from "./components/VectorViewer";
 import {
   fetchGameMeta,
   fetchLeaderboard,
+  fetchVectorPoints,
   resetSessionApi,
   startSessionApi,
   submitGuessApi,
@@ -22,27 +23,10 @@ import type {
   GuessApiResponse,
   GuessResult,
   LeaderboardRow,
-  WordEntry,
+  VectorPoint,
 } from "./types/game";
 
 const STORAGE_KEY = "semantic-guess-game-state-v7";
-const WORD_BANK_URL =
-  "/guess_bank_with_vectors.json";
-
-const FALLBACK_WORD_BANK: WordEntry[] = [
-  { word: "강아지", category: "동물", vector: [0.93, 0.88, 0.12, 0.08, 0.17, 0.64] },
-  { word: "고양이", category: "동물", vector: [0.91, 0.82, 0.15, 0.11, 0.14, 0.61] },
-  { word: "호랑이", category: "동물", vector: [0.84, 0.69, 0.18, 0.19, 0.29, 0.42] },
-  { word: "사자", category: "동물", vector: [0.82, 0.66, 0.17, 0.2, 0.31, 0.39] },
-  { word: "사과", category: "과일", vector: [0.18, 0.16, 0.94, 0.82, 0.23, 0.14] },
-  { word: "배", category: "과일", vector: [0.16, 0.18, 0.91, 0.84, 0.21, 0.12] },
-  { word: "포도", category: "과일", vector: [0.19, 0.21, 0.88, 0.8, 0.25, 0.11] },
-  { word: "자동차", category: "탈것", vector: [0.25, 0.87, 0.24, 0.11, 0.91, 0.29] },
-  { word: "버스", category: "탈것", vector: [0.22, 0.83, 0.19, 0.09, 0.95, 0.31] },
-  { word: "학교", category: "학습", vector: [0.64, 0.17, 0.21, 0.89, 0.13, 0.17] },
-  { word: "수학", category: "학습", vector: [0.57, 0.13, 0.14, 0.97, 0.11, 0.12] },
-  { word: "라면", category: "음식", vector: [0.24, 0.23, 0.56, 0.17, 0.16, 0.1] },
-];
 
 function getHistoryStorageKey(
   gameDate: string,
@@ -50,57 +34,6 @@ function getHistoryStorageKey(
   playerId: string,
 ) {
   return `${STORAGE_KEY}-${gameDate}-v${gameVersion}-${playerId}`;
-}
-
-function validateWordBank(
-  data: unknown,
-): { ok: true; data: WordEntry[] } | { ok: false; reason: string } {
-  if (!Array.isArray(data)) {
-    return { ok: false, reason: "JSON 최상위 구조가 배열이 아닙니다." };
-  }
-
-  const seen = new Set<string>();
-  const cleaned: WordEntry[] = [];
-
-  for (const item of data) {
-    if (typeof item !== "object" || item === null) continue;
-
-    const maybeWord = (item as { word?: unknown }).word;
-    const maybeCategory = (item as { category?: unknown }).category;
-    const maybeVector = (item as { vector?: unknown }).vector;
-    const maybePca3 = (item as { pca3?: unknown }).pca3;
-
-    if (typeof maybeWord !== "string") continue;
-    if (typeof maybeCategory !== "string") continue;
-    if (!Array.isArray(maybeVector) || maybeVector.length === 0) continue;
-    if (!maybeVector.every((value) => typeof value === "number" && Number.isFinite(value))) {
-      continue;
-    }
-
-    const parsedPca3 =
-      Array.isArray(maybePca3) &&
-      maybePca3.length === 3 &&
-      maybePca3.every((value) => typeof value === "number" && Number.isFinite(value))
-        ? ([maybePca3[0], maybePca3[1], maybePca3[2]] as [number, number, number])
-        : undefined;
-
-    const word = normalizeWord(maybeWord);
-    if (!word || seen.has(word)) continue;
-
-    seen.add(word);
-    cleaned.push({
-      word: maybeWord.trim(),
-      category: maybeCategory.trim(),
-      vector: maybeVector,
-      pca3: parsedPca3,
-    });
-  }
-
-  if (cleaned.length === 0) {
-    return { ok: false, reason: "유효한 단어 데이터가 없습니다." };
-  }
-
-  return { ok: true, data: cleaned };
 }
 
 const styles = {
@@ -203,9 +136,10 @@ export default function App() {
   const isMobile = windowWidth < 640;
 
   const [activeTab, setActiveTab] = useState<"history" | "scatter">("history");
-  const [wordBank, setWordBank] = useState<WordEntry[]>(FALLBACK_WORD_BANK);
   const [isLoadingWordBank, setIsLoadingWordBank] = useState(true);
-  const [wordBankError, setWordBankError] = useState<string | null>(null);
+  const [wordCount, setWordCount] = useState(0);
+  const [vectorPoints, setVectorPoints] = useState<VectorPoint[]>([]);
+  const [isLoadingVectorPoints, setIsLoadingVectorPoints] = useState(false);
 
   const [input, setInput] = useState("");
   const [message, setMessage] = useState("단어를 입력해 정답과의 유사도를 확인해 보세요.");
@@ -236,66 +170,28 @@ export default function App() {
     let cancelled = false;
 
     async function loadMeta() {
-      try {
-        const meta = await fetchGameMeta();
-        if (!cancelled) {
-          setGameDate(meta.currentDate);
-          setGameTimezone(meta.timezone);
-          setGameVersion(
-            typeof meta.gameVersion === "number" ? meta.gameVersion : 0,
-          );
-        }
-      } catch {
-        if (!cancelled) {
-          setMessage("게임 날짜 정보를 불러오지 못했습니다.");
-        }
+    try {
+      const meta = await fetchGameMeta();
+      if (!cancelled) {
+        setGameDate(meta.currentDate);
+        setGameTimezone(meta.timezone);
+        setGameVersion(
+          typeof meta.gameVersion === "number" ? meta.gameVersion : 0,
+        );
+        setWordCount(typeof meta.wordCount === "number" ? meta.wordCount : 0);
+      }
+    } catch {
+      if (!cancelled) {
+        setMessage("게임 날짜 정보를 불러오지 못했습니다.");
+      }
+    } finally {
+      if (!cancelled) {
+        setIsLoadingWordBank(false);
       }
     }
+  }
 
     void loadMeta();
-
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    async function loadWordBank() {
-      setIsLoadingWordBank(true);
-
-      try {
-        const response = await fetch(WORD_BANK_URL, { cache: "no-store" });
-        if (!response.ok) {
-          throw new Error(`데이터 파일을 불러오지 못했습니다. (${response.status})`);
-        }
-
-        const raw = await response.json();
-        const validated = validateWordBank(raw);
-        if (!validated.ok) {
-          throw new Error(validated.reason);
-        }
-
-        if (!cancelled) {
-          setWordBank(validated.data);
-          setWordBankError(null);
-        }
-      } catch (error) {
-        if (!cancelled) {
-          setWordBank(FALLBACK_WORD_BANK);
-          setWordBankError(
-            error instanceof Error ? error.message : "알 수 없는 데이터 로드 오류",
-          );
-        }
-      } finally {
-        if (!cancelled) {
-          setIsLoadingWordBank(false);
-        }
-      }
-    }
-
-    void loadWordBank();
 
     return () => {
       cancelled = true;
@@ -368,14 +264,6 @@ export default function App() {
     );
   }, [gameDate, gameVersion, playerId, history, isSolved]);
 
-  useEffect(() => {
-    if (wordBankError) {
-      setMessage(
-        `외부 단어 데이터 로드 실패: ${wordBankError}. 현재는 데모용 내장 단어 집합으로 동작합니다.`,
-      );
-    }
-  }, [wordBankError]);
-
   async function loadLeaderboardSafe() {
     try {
       const data = await fetchLeaderboard();
@@ -440,12 +328,45 @@ export default function App() {
 
   const topGuess = sortedHistory[0] ?? null;
 
-  async function submitGuess() {
-    if (isLoadingWordBank) {
-      setMessage("단어 데이터를 불러오는 중입니다.");
+  useEffect(() => {
+    if (activeTab !== "scatter") return;
+
+    if (history.length === 0) {
+      setVectorPoints([]);
       return;
     }
 
+    let cancelled = false;
+
+    async function loadPoints() {
+      setIsLoadingVectorPoints(true);
+
+      try {
+        const words = [...new Set(history.map((item) => item.word))];
+        const rows = await fetchVectorPoints(words);
+
+        if (!cancelled) {
+          setVectorPoints(rows);
+        }
+      } catch {
+        if (!cancelled) {
+          setVectorPoints([]);
+        }
+      } finally {
+        if (!cancelled) {
+          setIsLoadingVectorPoints(false);
+        }
+      }
+    }
+
+    void loadPoints();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTab, history]);
+
+  async function submitGuess() {
     const normalized = normalizeWord(input);
     if (!normalized) {
       setMessage("단어를 입력해 주세요.");
@@ -570,13 +491,6 @@ export default function App() {
               message={message}
             />
 
-            {wordBankError && (
-              <div style={styles.warning}>
-                외부 데이터 로드 실패: {wordBankError}. 현재는 데모용 내장 단어 집합으로
-                실행 중입니다.
-              </div>
-            )}
-
             <StatusCards
               topGuess={topGuess}
               historyLength={history.length}
@@ -589,7 +503,7 @@ export default function App() {
 
           <RuleCard
             isLoadingWordBank={isLoadingWordBank}
-            wordCount={wordBank.length}
+            wordCount={wordCount}
           />
         </div>
 
@@ -618,7 +532,14 @@ export default function App() {
               <h2 style={{ marginTop: 0, marginBottom: 16, fontSize: 22 }}>
                 3D 벡터 시각화
               </h2>
-              <VectorViewer history={history} wordBank={wordBank} />
+
+              {isLoadingVectorPoints && (
+                <p style={{ marginTop: 0, marginBottom: 12, color: "#475569", fontSize: 14 }}>
+                  시각화 좌표를 불러오는 중입니다.
+                </p>
+              )}
+
+              <VectorViewer history={history} vectorPoints={vectorPoints} />
             </div>
           )}
         </div>

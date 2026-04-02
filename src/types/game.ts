@@ -31,3 +31,8 @@ export type GuessApiResponse = {
   solved: boolean;
   elapsedMs: number;
 };
+
+export type VectorPoint = {
+  word: string;
+  position: [number, number, number];
+};
